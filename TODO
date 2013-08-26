@@ -1,0 +1,3 @@
+Write appropriate connection code
+Eventually get websocket code working instead of connecting to rabbit directly
+Batching/Buffering of requests

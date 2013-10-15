@@ -39,19 +39,19 @@ class Event(object):
 
     def set_key_value(self, key, value):
         """Sets a dynamic key/value. Fails if used on key with multiple values."""
-        self._post("sd", {str(key): str(value)}, "/event/%s/details/" % self.id)
+        self._post("attribute", {str(key): str(value)}, "/event/%s/details/" % self.id)
 
     def add_key_value(self, key, value):
         """Used to append values to a key. These values are considered immutable."""
-        self._put("sd", {str(key): str(value)}, "/event/%s/details/" % self.id)
+        self._put("attribute", {str(key): str(value)}, "/event/%s/details/" % self.id)
 
-    def set_details(self, details):
-        """Used to append values to a key. These values are considered immutable."""
-        self._post("details", details, "/event/%s/details/" % self.id)
+    def create_stream(self, name, text):
+        """Create a new named stream."""
+        self._post("stream", {"name": name, "text": text}, "/event/%s/details/" % self.id)
 
-    def add_details(self, details):
-        """Used to append values to a key. These values are considered immutable."""
-        self._put("details", details, "/event/%s/details/" % self.id)
+    def append_stream(self, name, text):
+        """Used to append to a named stream."""
+        self._put("stream", {"name": name, "text": text}, "/event/%s/details/" % self.id)
 
     def _update(self, payload):
         self.id = payload.get("id")

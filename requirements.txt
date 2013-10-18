@@ -1,0 +1,5 @@
+argparse==1.2.1
+pika==0.9.13
+pytz==2013.7
+requests==2.0.0
+wsgiref==0.1.2

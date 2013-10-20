@@ -9,14 +9,15 @@ import requests
 from datetime import datetime
 
 
-class Event(object):
-    def __init__(self, payload):
-        self._update(payload)
+class PyAuditor(object):
+    def __init__(self, hostname, port):
+        self.hostname = hostname
+        self.port = port
 
     def _put(self, key, value, handler):
         headers = {'Content-type': 'application/json'}
         response = requests.put(
-            "http://localhost:8000%s" % (handler,),
+            "http://%s:%s%s" % (self.hostname, self.port, handler,),
             data=json.dumps({key: value}),
             headers=headers
         )
@@ -28,7 +29,7 @@ class Event(object):
     def _post(self, key, value, handler):
         headers = {'Content-type': 'application/json'}
         response = requests.post(
-            "http://localhost:8000%s" % (handler,),
+            "http://%s:%s%s" % (self.hostname, self.port, handler,),
             data=json.dumps({key: value}),
             headers=headers
         )
@@ -37,21 +38,50 @@ class Event(object):
             raise Error(data["data"]["msg"])
         return data["data"]
 
+    def alog(self, summary, tags="", user=None, level=1, end_now=True):
+        data = {
+            "summary": summary,
+            "user": get_user(user),
+            "level": level,
+            "start": pytz.UTC.localize(datetime.utcnow()),
+        }
+
+        if isinstance(tags, list):
+            tags = ", ".join(tags)
+
+        if tags: data["tags"] = tags
+
+        if end_now:
+            data["end"] = data["start"]
+
+        response = json.loads(requests.post("http://%s:%s/event/" % (self.hostname, self.port), data=data).text)
+
+        if response["type"] == "error":
+            raise Error(response["data"]["msg"])
+
+        return Event(self, response["data"])
+
+
+class Event(object):
+    def __init__(self, connection, payload):
+        self.connection = connection
+        self._update(payload)
+
     def set_key_value(self, key, value):
         """Sets a dynamic key/value. Fails if used on key with multiple values."""
-        self._post("attribute", {str(key): str(value)}, "/event/%s/details/" % self.id)
+        self.connection._post("attribute", {str(key): str(value)}, "/event/%s/details/" % self.id)
 
     def add_key_value(self, key, value):
         """Used to append values to a key. These values are considered immutable."""
-        self._put("attribute", {str(key): str(value)}, "/event/%s/details/" % self.id)
+        self.connection._put("attribute", {str(key): str(value)}, "/event/%s/details/" % self.id)
 
     def create_stream(self, name, text):
         """Create a new named stream."""
-        self._post("stream", {"name": name, "text": text}, "/event/%s/details/" % self.id)
+        self.connection._post("stream", {"name": name, "text": text}, "/event/%s/details/" % self.id)
 
     def append_stream(self, name, text):
         """Used to append to a named stream."""
-        self._put("stream", {"name": name, "text": text}, "/event/%s/details/" % self.id)
+        self.connection._put("stream", {"name": name, "text": text}, "/event/%s/details/" % self.id)
 
     def _update(self, payload):
         self.id = payload.get("id")
@@ -62,7 +92,7 @@ class Event(object):
         self.end = payload.get("end")
 
     def close(self):
-        self._update(self._put("end", str(pytz.UTC.localize(datetime.utcnow())), "/event/%s/" % self.id))
+        self._update(self.connection._put("end", str(pytz.UTC.localize(datetime.utcnow())), "/event/%s/" % self.id))
 
 
 class Error(Exception):
@@ -75,31 +105,6 @@ def get_user(user=None):
     if "SUDO_USER" in os.environ:
         return "%s(%s)" % (os.environ["USER"], os.environ["SUDO_USER"])
     return os.environ["USER"]
-
-
-
-def alog(summary, tags="", user=None, level=1, end_now=True):
-    data = {
-        "summary": summary,
-        "user": get_user(user),
-        "level": level,
-        "start": pytz.UTC.localize(datetime.utcnow()),
-    }
-
-    if isinstance(tags, list):
-        tags = ", ".join(tags)
-
-    if tags: data["tags"] = tags
-
-    if end_now:
-        data["end"] = data["start"]
-
-    response = json.loads(requests.post("http://localhost:8000/event/", data=data).text)
-
-    if response["type"] == "error":
-        raise Error(response["data"]["msg"])
-
-    return Event(response["data"])
 
 
 def subscribe(headers, callback):

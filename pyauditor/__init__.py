@@ -18,32 +18,38 @@ class Auditor(object):
     def __init__(self, hostname, port, secure=False, buffer_secs=None):
         self.hostname = hostname
         self.port = port
+        self.secure = secure
         self.buffer_secs = buffer_secs
+        self.events = Events(self)
 
+    def _request(self, caller, handler, key=None, value=None):
+        headers = {'Content-type': 'application/json'}
+        kwargs = {
+            "headers": headers,
+            "timeout": 10,
+        }
+
+        if key and value:
+            kwargs["data"] = json.dumps({key: value})
+
+        response = caller(
+            "http://%s:%s%s" % (self.hostname, self.port, handler), **kwargs)
+
+        data = json.loads(response.text)
+
+        if data["type"] == "error":
+            raise Error(data["data"]["msg"])
+
+        return data["data"]
 
     def _put(self, key, value, handler):
-        headers = {'Content-type': 'application/json'}
-        response = requests.put(
-            "http://%s:%s%s" % (self.hostname, self.port, handler,),
-            data=json.dumps({key: value}),
-            headers=headers, timeout=10
-        )
-        data = json.loads(response.text)
-        if data["type"] == "error":
-            raise Error(data["data"]["msg"])
-        return data["data"]
+        return self._request(requests.put, key, value, handler)
 
     def _post(self, key, value, handler):
-        headers = {'Content-type': 'application/json'}
-        response = requests.post(
-            "http://%s:%s%s" % (self.hostname, self.port, handler,),
-            data=json.dumps({key: value}),
-            headers=headers, timeout=10
-        )
-        data = json.loads(response.text)
-        if data["type"] == "error":
-            raise Error(data["data"]["msg"])
-        return data["data"]
+        return self._request(requests.post, key, value, handler)
+
+    def _get(self, handler):
+        return self._request(requests.get, handler)
 
     def alog(self, summary, tags="", user=None, level=1, close=True):
         data = {
@@ -81,22 +87,64 @@ class EventCommiter(threading.Thread):
 
     def run(self):
         last_update = 0
-        while not self.event.closing:
+        while not self.event._closing:
             now = time.time()
-            if (now - last_update) >= self.event.buffer_secs:
+            if (now - last_update) >= self.event._connection.buffer_secs:
                 self.event.commit()
                 last_update = time.time()
             time.sleep(.2)
 
 
+class Events(object):
+    def __init__(self, connection):
+        self._connection = connection
+        self.limit = 50
+
+    def __getitem__(self, val):
+        offset = 0
+        if not isinstance(val, int):
+            if val.start:
+                offset = val.start
+
+            limit = self.limit + offset
+            if val.stop:
+                limit = val.stop
+        else:
+            limit = val
+
+        events, total = self._get_events(offset, limit)
+        return events
+
+    def _get_events(self, offset, limit):
+        response = self._connection._get("/event/?offset=%s&limit=%s" % (offset, limit))
+        total = response["total"]
+        events = [Event(self._connection, event) for event in response["events"]]
+        return events, total
+
+    def __iter__(self):
+        events, total = self._get_events(0, self.limit)
+
+        for event in events:
+            yield event
+
+        # If this is True we need to start paginating.
+        if total > len(events):
+            for idx in range(1, (total / self.limit) + 1):
+                offset = idx * self.limit
+                events, _ = self._get_events(offset, offset + self.limit)
+
+                for event in events:
+                    yield event
+
+
+
 class Event(object):
-    def __init__(self, connection, payload, buffer_secs=None):
-        self.connection = connection
+    def __init__(self, connection, payload):
+        self._connection = connection
         self._update(payload)
 
-        self.buffer_secs = buffer_secs
-        self.closing = False
-        self.commiter = None
+        self._closing = False
+        self._commiter = None
 
         self._batched_details = {
             "attribute": {},
@@ -107,15 +155,12 @@ class Event(object):
         self.attrs = DetailsDescriptor(self, "attribute")
         self.streams = DetailsDescriptor(self, "stream")
 
-        if buffer_secs:
-            # This must be started last so that it has access to all
-            # of the attributes when it is started.
-            self.commiter = EventCommiter(self)
-            self.commiter.daemon = True
-            self.commiter.start()
-
 
     def _add_detail(self, details_type, name, value, mode="set"):
+
+        if self._commiter is None:
+            self._start_commiter()
+
         with self._batched_details_lock:
             detail = self._batched_details[details_type]
             if name not in detail:
@@ -132,8 +177,16 @@ class Event(object):
             elif mode == "append":
                 detail[name]["value"].append(value)
 
-        if not self.buffer_secs:
+        if not self._connection.buffer_secs:
             self.commit()
+
+    def _start_commiter(self):
+        if self._connection.buffer_secs:
+            # This must be started last so that it has access to all
+            # of the attributes when it is started.
+            self._commiter = EventCommiter(self)
+            self._commiter.daemon = True
+            self._commiter.start()
 
     @staticmethod
     def _build_payload(values):
@@ -170,8 +223,8 @@ class Event(object):
             self._batched_details["attribute"] = {}
             self._batched_details["stream"] = {}
 
-        self.connection._post("details", self._build_payload(values),
-                              "/event/%s/details/" % self.id)
+        self._connection._post("/event/%s/details/" % self.id,
+                               "details", self._build_payload(values))
 
     def _update(self, payload):
         self.id = payload.get("id")
@@ -182,10 +235,12 @@ class Event(object):
         self.end = payload.get("end")
 
     def close(self):
-        self.closing = True
-        self._update(self.connection._put("end", str(pytz.UTC.localize(datetime.utcnow())), "/event/%s/" % self.id))
-        if self.commiter:
-            self.commiter.join()
+        self._closing = True
+        self._update(self._connection._put(
+            "end", "/event/%s/" % self.id, str(pytz.UTC.localize(datetime.utcnow()))
+        ))
+        if self._commiter:
+            self._commiter.join()
         self.commit()
 
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-from pyauditor import PyAuditor
+from pyauditor import Auditor
 
 def main():
     import argparse
@@ -9,7 +9,7 @@ def main():
     parser.add_argument("message", nargs="*", default=None,
                         help="A message to log to Auditor")
 
-    parser.add_argument('--limit', default=15, type=int, help='The amount of records to return.')
+    parser.add_argument('--limit', default=20, type=int, help='The amount of records to return.')
     parser.add_argument('--offset', default=0, type=int, help='The offset for records to return.')
     parser.add_argument('--tags', default=[], action="append", help='Which tag to apply to message or filter.')
     parser.add_argument('--user', default="", help='Which tag to apply to message or filter.')
@@ -17,7 +17,7 @@ def main():
 
     args = parser.parse_args()
 
-    pyauditor = PyAuditor("localhost", 8000)
+    auditor = Auditor("localhost", 8000)
 
     if args.message:
         alog_args = {}
@@ -30,7 +30,10 @@ def main():
                 new_tags.extend(tag.split(","))
             alog_args["tags"] = new_tags
 
-        pyauditor.alog(" ".join(args.message), **alog_args)
+        auditor.alog(" ".join(args.message), **alog_args)
+    else:
+        for event in auditor.events[args.offset:args.limit]:
+            print event.summary[:30], ", ".join(event.tags), event.user, event.start, event.end
 
 if __name__ == "__main__":
     main()

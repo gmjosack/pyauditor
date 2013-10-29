@@ -1,6 +1,5 @@
 #!/usr/bin/env python
 
-import pika
 import json
 import os
 import pytz

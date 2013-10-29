@@ -27,7 +27,7 @@ class Auditor(object):
         response = requests.put(
             "http://%s:%s%s" % (self.hostname, self.port, handler,),
             data=json.dumps({key: value}),
-            headers=headers, timeout=5
+            headers=headers, timeout=10
         )
         data = json.loads(response.text)
         if data["type"] == "error":
@@ -39,7 +39,7 @@ class Auditor(object):
         response = requests.post(
             "http://%s:%s%s" % (self.hostname, self.port, handler,),
             data=json.dumps({key: value}),
-            headers=headers, timeout=5
+            headers=headers, timeout=10
         )
         data = json.loads(response.text)
         if data["type"] == "error":
@@ -84,12 +84,10 @@ class EventCommiter(threading.Thread):
         last_update = 0
         while not self.event.closing:
             now = time.time()
-            print "Running"
             if (now - last_update) >= self.event.buffer_secs:
                 self.event.commit()
                 last_update = time.time()
-            time.sleep(.1)
-        print "Fell off"
+            time.sleep(.2)
 
 
 class Event(object):
@@ -101,7 +99,10 @@ class Event(object):
         self.closing = False
         self.commiter = None
 
-        self._batched_details = []
+        self._batched_details = {
+            "attribute": {},
+            "stream": {},
+        }
         self._batched_details_lock = threading.RLock()
 
         self.attrs = DetailsDescriptor(self, "attribute")
@@ -117,27 +118,61 @@ class Event(object):
 
     def _add_detail(self, details_type, name, value, mode="set"):
         with self._batched_details_lock:
-            self._batched_details.append({
-                "details_type": details_type,
-                "name": name,
-                "value": value,
-                "mode": mode
-            })
+            detail = self._batched_details[details_type]
+            if name not in detail:
+                detail[name] = {
+                    "details_type": details_type,
+                    "name": name,
+                    "value": [],
+                    "mode": "append",
+                }
+
+            if mode == "set":
+                detail[name]["mode"] = "set"
+                detail[name]["value"] = [value]
+            elif mode == "append":
+                detail[name]["value"].append(value)
+
         if not self.buffer_secs:
             self.commit()
 
+    @staticmethod
+    def _build_payload(values):
+        payload = []
+        for detail in values:
+            if detail["details_type"] == "stream":
+                payload.append({
+                    "details_type": "stream",
+                    "name": detail["name"],
+                    "value": "".join(detail["value"]),
+                    "mode": detail["mode"],
+                })
+            elif detail["details_type"] == "attribute":
+                for idx, val in enumerate(detail["value"]):
+                    mode = "append"
+                    if detail["mode"] == "set" and idx == 0:
+                        mode = "set"
+                    payload.append({
+                        "details_type": "attribute",
+                        "name": detail["name"],
+                        "value": val,
+                        "mode": mode,
+                    })
+        return payload
+
     def commit(self):
-        print "Commiting!", len(self._batched_details)
         with self._batched_details_lock:
-            if not len(self._batched_details):
-                print "Nothing!"
+            values = self._batched_details["attribute"].values()
+            values += self._batched_details["stream"].values()
+
+            if not len(values):
                 return
-            details = self._batched_details[:]
-            self._batched_details = []
-        print "Posting!"
-        self.connection._post("details", details,
+
+            self._batched_details["attribute"] = {}
+            self._batched_details["stream"] = {}
+
+        self.connection._post("details", self._build_payload(values),
                               "/event/%s/details/" % self.id)
-        print "Done Posting!"
 
     def _update(self, payload):
         self.id = payload.get("id")
@@ -148,16 +183,11 @@ class Event(object):
         self.end = payload.get("end")
 
     def close(self):
-        print "Closing!"
         self.closing = True
         self._update(self.connection._put("end", str(pytz.UTC.localize(datetime.utcnow())), "/event/%s/" % self.id))
         if self.commiter:
-            print "Waiting on Thread!"
             self.commiter.join()
-            print "Thread Dead!"
-        print "Final Commit"
         self.commit()
-        print "Yay!"
 
 
 class DetailsContainer(object):

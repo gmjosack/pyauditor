@@ -7,6 +7,7 @@ import requests
 import threading
 import time
 
+from collections import OrderedDict
 from datetime import datetime
 
 
@@ -77,7 +78,7 @@ class Auditor(object):
         if close:
             return
 
-        return Event(self, response["data"], self.buffer_secs)
+        return Event(self, response["data"])
 
 
 class EventCommiter(threading.Thread):
@@ -147,8 +148,8 @@ class Event(object):
         self._commiter = None
 
         self._batched_details = {
-            "attribute": {},
-            "stream": {},
+            "attribute": OrderedDict(),
+            "stream": OrderedDict(),
         }
         self._batched_details_lock = threading.RLock()
 
@@ -220,8 +221,8 @@ class Event(object):
             if not len(values):
                 return
 
-            self._batched_details["attribute"] = {}
-            self._batched_details["stream"] = {}
+            self._batched_details["attribute"] = OrderedDict()
+            self._batched_details["stream"] = OrderedDict()
 
         self._connection._post("/event/%s/details/" % self.id,
                                "details", self._build_payload(values))
@@ -237,7 +238,7 @@ class Event(object):
     def close(self):
         self._closing = True
         self._update(self._connection._put(
-            "end", "/event/%s/" % self.id, str(pytz.UTC.localize(datetime.utcnow()))
+            "/event/%s/" % self.id, "end", str(pytz.UTC.localize(datetime.utcnow()))
         ))
         if self._commiter:
             self._commiter.join()

@@ -1,4 +1,4 @@
 argparse==1.2.1
 pytz==2013.7
-requests==2.0.0
+requests==2.20.0
 wsgiref==0.1.2
